@@ -21,6 +21,23 @@ Basic initialization which is going to work for everybody:
 
     northwind = pyodata.Client(SERVICE_URL, requests.Session())
 
+Get the service proxy client for an OData service requiring sap-client parameter
+--------------------------------------------------------------------------------
+
+This is a sample when it is necessary to specify sap-client:
+
+.. code-block:: python
+
+    import pyodata
+    import requests
+
+    SERVICE_URL = 'http://services.odata.org/V2/Northwind/Northwind.svc/'
+
+    session = requests.Session()
+    param = {'sap-client': '510'}
+    session.params = param
+    northwind = pyodata.Client(SERVICE_URL, session)
+
 Get the service proxy client for an OData service requiring authentication
 --------------------------------------------------------------------------
 
@@ -140,6 +157,12 @@ For parser to use your custom configuration, it needs to be passed as an argumen
         })
 
     northwind = pyodata.Client(SERVICE_URL, requests.Session(), config=custom_config)
+
+Additionally, Schema class has Boolean atribute 'is_valid' that returns if the parser encountered errors. It's value does not depends on used Parser policy. 
+
+.. code-block:: python
+
+    northwind.schema.is_valid
 
 Set custom namespaces (Deprecated - use config instead)
 -------------------------------------------------------

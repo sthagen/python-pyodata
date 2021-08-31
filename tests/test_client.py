@@ -29,6 +29,7 @@ def test_create_client_for_local_metadata(metadata):
     client = pyodata.Client(SERVICE_URL, requests, metadata=metadata)
 
     assert isinstance(client, pyodata.v2.service.Service)
+    assert client.schema.is_valid == True
 
     assert len(client.schema.entity_sets) != 0
 
@@ -39,7 +40,7 @@ def test_create_service_application_xml(metadata):
 
     responses.add(
         responses.GET,
-        "{0}/$metadata".format(SERVICE_URL),
+        f"{SERVICE_URL}/$metadata",
         content_type='application/xml',
         body=metadata,
         status=200)
@@ -53,7 +54,7 @@ def test_create_service_application_xml(metadata):
     client = pyodata.Client(SERVICE_URL + '/', requests)
 
     assert isinstance(client, pyodata.v2.service.Service)
-
+    assert client.schema.is_valid == True
 
 @responses.activate
 def test_create_service_text_xml(metadata):
@@ -61,7 +62,7 @@ def test_create_service_text_xml(metadata):
 
     responses.add(
         responses.GET,
-        "{0}/$metadata".format(SERVICE_URL),
+        f"{SERVICE_URL}/$metadata",
         content_type='text/xml',
         body=metadata,
         status=200)
@@ -75,7 +76,7 @@ def test_create_service_text_xml(metadata):
     client = pyodata.Client(SERVICE_URL + '/', requests)
 
     assert isinstance(client, pyodata.v2.service.Service)
-
+    assert client.schema.is_valid == True
 
 @responses.activate
 def test_metadata_not_reachable():
@@ -83,7 +84,7 @@ def test_metadata_not_reachable():
 
     responses.add(
         responses.GET,
-        "{0}/$metadata".format(SERVICE_URL),
+        f"{SERVICE_URL}/$metadata",
         content_type='text/html',
         status=404)
 
@@ -92,14 +93,13 @@ def test_metadata_not_reachable():
 
     assert str(e_info.value).startswith('Metadata request failed')
 
-
 @responses.activate
 def test_metadata_saml_not_authorized():
     """Check handling of not SAML / OAuth unauthorized response"""
 
     responses.add(
         responses.GET,
-        "{0}/$metadata".format(SERVICE_URL),
+        f"{SERVICE_URL}/$metadata",
         content_type='text/html; charset=utf-8',
         status=200)
 
@@ -116,7 +116,7 @@ def test_client_custom_configuration(mock_warning, metadata):
 
     responses.add(
         responses.GET,
-        "{0}/$metadata".format(SERVICE_URL),
+        f"{SERVICE_URL}/$metadata",
         content_type='application/xml',
         body=metadata,
         status=200)
