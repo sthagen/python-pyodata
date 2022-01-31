@@ -6,6 +6,7 @@ Date:   2017-08-21
 """
 # pylint: disable=missing-docstring,too-many-instance-attributes,too-many-arguments,protected-access,no-member,line-too-long,logging-format-interpolation,too-few-public-methods,too-many-lines, too-many-public-methods
 
+import base64
 import collections
 import datetime
 from enum import Enum, auto
@@ -26,17 +27,6 @@ FIX_SCREWED_UP_MAXIMUM_DATETIME_VALUE = False
 
 IdentifierInfo = collections.namedtuple('IdentifierInfo', 'namespace name')
 TypeInfo = collections.namedtuple('TypeInfo', 'namespace name is_collection')
-
-
-def current_timezone():
-    """Default Timezone for Python datetime instances when parsed from
-       Edm.DateTime values and vice versa.
-
-       OData V2 does not mention Timezones in the documentation of
-       Edm.DateTime and UTC was chosen because it is universal.
-    """
-
-    return datetime.timezone.utc
 
 
 def modlog():
@@ -101,7 +91,8 @@ class Config:
     def __init__(self,
                  custom_error_policies=None,
                  default_error_policy=None,
-                 xml_namespaces=None):
+                 xml_namespaces=None,
+                 retain_null=False):
 
         """
         :param custom_error_policies: {ParserError: ErrorPolicy} (default None)
@@ -112,6 +103,9 @@ class Config:
                                      If custom policy is not specified for the tag, the default policy will be used.
 
         :param xml_namespaces: {str: str} (default None)
+
+        :param retain_null: bool (default False)
+                            If true, do not substitute missing (and null-able) values with default value.
         """
 
         self._custom_error_policy = custom_error_policies
@@ -125,6 +119,8 @@ class Config:
             xml_namespaces = {}
 
         self._namespaces = xml_namespaces
+
+        self._retain_null = retain_null
 
     def err_policy(self, error: ParserError):
         if self._custom_error_policy is None:
@@ -146,6 +142,10 @@ class Config:
     @namespaces.setter
     def namespaces(self, value: dict):
         self._namespaces = value
+
+    @property
+    def retain_null(self):
+        return self._retain_null
 
 
 class Identifier:
@@ -175,7 +175,7 @@ class Identifier:
 
 
 class Types:
-    """Repository of all available OData types
+    """Repository of all available OData V2 primitive types + their Collection variants
 
        Since each type has instance of appropriate type, this
        repository acts as central storage for all instances. The
@@ -183,7 +183,6 @@ class Types:
        always reuse existing instances if possible
     """
 
-    # dictionary of all registered types (primitive, complex and collection variants)
     Types = None
 
     @staticmethod
@@ -194,10 +193,10 @@ class Types:
             Types.Types = {}
 
             Types.register_type(Typ('Null', 'null'))
-            Types.register_type(Typ('Edm.Binary', 'binary\'\''))
+            Types.register_type(Typ('Edm.Binary', 'binary\'\'', EdmBinaryTypTraits('(?:binary|X)')))
             Types.register_type(Typ('Edm.Boolean', 'false', EdmBooleanTypTraits()))
             Types.register_type(Typ('Edm.Byte', '0'))
-            Types.register_type(Typ('Edm.DateTime', 'datetime\'2000-01-01T00:00\'', EdmDateTimeTypTraits()))
+            Types.register_type(Typ('Edm.DateTime', 'datetime\'1753-01-01T00:00\'', EdmDateTimeTypTraits()))
             Types.register_type(Typ('Edm.Decimal', '0.0M'))
             Types.register_type(Typ('Edm.Double', '0.0d', EdmFPNumTypTraits.edm_double()))
             Types.register_type(Typ('Edm.Single', '0.0f', EdmFPNumTypTraits.edm_single()))
@@ -210,7 +209,8 @@ class Types:
             Types.register_type(Typ('Edm.SByte', '0'))
             Types.register_type(Typ('Edm.String', '\'\'', EdmStringTypTraits()))
             Types.register_type(Typ('Edm.Time', 'time\'PT00H00M\''))
-            Types.register_type(Typ('Edm.DateTimeOffset', 'datetimeoffset\'0000-00-00T00:00:00\''))
+            Types.register_type(
+                Typ('Edm.DateTimeOffset', 'datetimeoffset\'1753-01-01T00:00:00Z\'', EdmDateTimeOffsetTypTraits()))
 
     @staticmethod
     def register_type(typ):
@@ -361,8 +361,54 @@ class EdmPrefixedTypTraits(TypTraits):
         return matches.group(1)
 
 
+class EdmBinaryTypTraits(EdmPrefixedTypTraits):
+    """Edm.Binary traits"""
+
+    def to_literal(self, value):
+        binary = base64.b64decode(value, validate=True)
+        return f"binary'{base64.b16encode(binary).decode()}'"
+
+    def from_literal(self, value):
+        binary = base64.b16decode(super().from_literal(value), casefold=True)
+        return base64.b64encode(binary).decode()
+
+
+def ms_since_epoch_to_datetime(value, tzinfo):
+    """Convert milliseconds since midnight 1.1.1970 to datetime"""
+    try:
+        # https://stackoverflow.com/questions/36179914/timestamp-out-of-range-for-platform-localtime-gmtime-function
+        return datetime.datetime(1970, 1, 1, tzinfo=tzinfo) + datetime.timedelta(milliseconds=int(value))
+    except (ValueError, OverflowError):
+        min_ticks = -62135596800000
+        max_ticks = 253402300799999
+        if FIX_SCREWED_UP_MINIMAL_DATETIME_VALUE and int(value) < min_ticks:
+            # Some service providers return false minimal date values.
+            # -62135596800000 is the lowest value PyOData could read.
+            # This workaround fixes this issue and returns 0001-01-01 00:00:00+00:00 in such a case.
+            return datetime.datetime(year=1, day=1, month=1, tzinfo=tzinfo)
+        if FIX_SCREWED_UP_MAXIMUM_DATETIME_VALUE and int(value) > max_ticks:
+            return datetime.datetime(year=9999, day=31, month=12, tzinfo=tzinfo)
+        raise PyODataModelError(f'Cannot decode datetime from value {value}. '
+                                f'Possible value range: {min_ticks} to {max_ticks}. '
+                                f'You may fix this by setting `FIX_SCREWED_UP_MINIMAL_DATETIME_VALUE` '
+                                f' or `FIX_SCREWED_UP_MAXIMUM_DATETIME_VALUE` as a workaround.')
+
+
+def parse_datetime_literal(value):
+    try:
+        return datetime.datetime.strptime(value, '%Y-%m-%dT%H:%M:%S.%f')
+    except ValueError:
+        try:
+            return datetime.datetime.strptime(value, '%Y-%m-%dT%H:%M:%S')
+        except ValueError:
+            try:
+                return datetime.datetime.strptime(value, '%Y-%m-%dT%H:%M')
+            except ValueError:
+                raise PyODataModelError(f'Cannot decode datetime from value {value}.')
+
+
 class EdmDateTimeTypTraits(EdmPrefixedTypTraits):
-    """Emd.DateTime traits
+    """Edm.DateTime traits
 
        Represents date and time with values ranging from 12:00:00 midnight,
        January 1, 1753 A.D. through 11:59:59 P.M, December 9999 A.D.
@@ -391,6 +437,9 @@ class EdmDateTimeTypTraits(EdmPrefixedTypTraits):
             raise PyODataModelError(
                 f'Cannot convert value of type {type(value)} to literal. Datetime format is required.')
 
+        if value.tzinfo != datetime.timezone.utc:
+            raise PyODataModelError('Edm.DateTime accepts only UTC')
+
         # Sets timezone to none to avoid including timezone information in the literal form.
         return super(EdmDateTimeTypTraits, self).to_literal(value.replace(tzinfo=None).isoformat())
 
@@ -398,39 +447,38 @@ class EdmDateTimeTypTraits(EdmPrefixedTypTraits):
         if isinstance(value, str):
             return value
 
+        if value.tzinfo != datetime.timezone.utc:
+            raise PyODataModelError('Edm.DateTime accepts only UTC')
+
         # Converts datetime into timestamp in milliseconds in UTC timezone as defined in ODATA specification
         # https://www.odata.org/documentation/odata-version-2-0/json-format/
-        return f'/Date({int(value.replace(tzinfo=current_timezone()).timestamp()) * 1000})/'
+        # See also: https://docs.python.org/3/library/datetime.html#datetime.datetime.timestamp
+        ticks = (value - datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)) / datetime.timedelta(milliseconds=1)
+        return f'/Date({int(ticks)})/'
 
     def from_json(self, value):
 
         if value is None:
             return None
 
-        matches = re.match(r"^/Date\((.*)\)/$", value)
-        if not matches:
-            raise PyODataModelError(
-                f"Malformed value {value} for primitive Edm type. Expected format is /Date(value)/")
-        value = matches.group(1)
-
+        matches = re.match(r"^/Date\((?P<milliseconds_since_epoch>-?\d+)(?P<offset_in_minutes>[+-]\d+)?\)/$", value)
         try:
-            # https://stackoverflow.com/questions/36179914/timestamp-out-of-range-for-platform-localtime-gmtime-function
-            value = datetime.datetime(1970, 1, 1, tzinfo=current_timezone()) + datetime.timedelta(milliseconds=int(value))
-        except (ValueError, OverflowError):
-            if FIX_SCREWED_UP_MINIMAL_DATETIME_VALUE and int(value) < -62135596800000:
-                # Some service providers return false minimal date values.
-                # -62135596800000 is the lowest value PyOData could read.
-                # This workaroud fixes this issue and returns 0001-01-01 00:00:00+00:00 in such a case.
-                value = datetime.datetime(year=1, day=1, month=1, tzinfo=current_timezone())
-            elif FIX_SCREWED_UP_MAXIMUM_DATETIME_VALUE and int(value) > 253402300799999:
-                value = datetime.datetime(year=9999, day=31, month=12, tzinfo=current_timezone())
-            else:
-                raise PyODataModelError(f'Cannot decode datetime from value {value}. '
-                                        f'Possible value range: -62135596800000 to 253402300799999. '
-                                        f'You may fix this by setting `FIX_SCREWED_UP_MINIMAL_DATETIME_VALUE` '
-                                        f' or `FIX_SCREWED_UP_MAXIMUM_DATETIME_VALUE` as a workaround.')
-
-        return value
+            milliseconds_since_epoch = matches.group('milliseconds_since_epoch')
+        except AttributeError:
+            raise PyODataModelError(
+                f"Malformed value {value} for primitive Edm.DateTime type."
+                " Expected format is /Date(<ticks>[±<offset>])/")
+        try:
+            offset_in_minutes = int(matches.group('offset_in_minutes') or 0)
+            timedelta = datetime.timedelta(minutes=offset_in_minutes)
+        except ValueError:
+            raise PyODataModelError(
+                f"Malformed value {value} for primitive Edm.DateTime type."
+                " Expected format is /Date(<ticks>[±<offset>])/")
+        except AttributeError:
+            timedelta = datetime.timedelta()  # Missing offset is interpreted as UTC
+        # Might raise a PyODataModelError exception
+        return ms_since_epoch_to_datetime(milliseconds_since_epoch, datetime.timezone.utc) + timedelta
 
     def from_literal(self, value):
 
@@ -439,18 +487,85 @@ class EdmDateTimeTypTraits(EdmPrefixedTypTraits):
 
         value = super(EdmDateTimeTypTraits, self).from_literal(value)
 
-        try:
-            value = datetime.datetime.strptime(value, '%Y-%m-%dT%H:%M:%S.%f')
-        except ValueError:
-            try:
-                value = datetime.datetime.strptime(value, '%Y-%m-%dT%H:%M:%S')
-            except ValueError:
-                try:
-                    value = datetime.datetime.strptime(value, '%Y-%m-%dT%H:%M')
-                except ValueError:
-                    raise PyODataModelError(f'Cannot decode datetime from value {value}.')
+        # Note: parse_datetime_literal raises a PyODataModelError exception on invalid formats
+        return parse_datetime_literal(value).replace(tzinfo=datetime.timezone.utc)
 
-        return value.replace(tzinfo=current_timezone())
+
+class EdmDateTimeOffsetTypTraits(EdmPrefixedTypTraits):
+    """Edm.DateTimeOffset traits
+
+       Represents date and time, plus an offset in minutes from UTC, with values ranging from 12:00:00 midnight,
+       January 1, 1753 A.D. through 11:59:59 P.M, December 9999 A.D
+
+       Literal forms:
+       datetimeoffset'yyyy-mm-ddThh:mm[:ss]±ii:nn' (works for all time zones)
+       datetimeoffset'yyyy-mm-ddThh:mm[:ss]Z' (works only for UTC)
+       NOTE: Spaces are not allowed between datetimeoffset and quoted portion.
+       The datetime part is case-insensitive, the offset one is not.
+
+       Example 1: datetimeoffset'1970-01-01T00:00:01+00:30'
+        - /Date(1000+0030)/ (As DateTime, but with a 30 minutes timezone offset)
+       Example 1: datetimeoffset'1970-01-01T00:00:01-00:60'
+        - /Date(1000-0030)/ (As DateTime, but with a negative 60 minutes timezone offset)
+       https://blogs.sap.com/2017/01/05/date-and-time-in-sap-gateway-foundation/
+    """
+
+    def __init__(self):
+        super(EdmDateTimeOffsetTypTraits, self).__init__('datetimeoffset')
+
+    def to_literal(self, value):
+        """Convert python datetime representation to literal format"""
+
+        if not isinstance(value, datetime.datetime) or value.utcoffset() is None:
+            raise PyODataModelError(
+                f'Cannot convert value of type {type(value)} to literal. Datetime format including offset is required.')
+
+        return super(EdmDateTimeOffsetTypTraits, self).to_literal(value.isoformat())
+
+    def to_json(self, value):
+        # datetime.timestamp() does not work due to its limited precision
+        offset_in_minutes = int(value.utcoffset() / datetime.timedelta(minutes=1))
+        ticks = int((value - datetime.datetime(1970, 1, 1, tzinfo=value.tzinfo)) / datetime.timedelta(milliseconds=1))
+        return f'/Date({ticks}{offset_in_minutes:+05})/'
+
+    def from_json(self, value):
+        matches = re.match(r"^/Date\((?P<milliseconds_since_epoch>-?\d+)(?P<offset_in_minutes>[+-]\d+)\)/$", value)
+        try:
+            milliseconds_since_epoch = matches.group('milliseconds_since_epoch')
+            offset_in_minutes = int(matches.group('offset_in_minutes'))
+        except (ValueError, AttributeError):
+            raise PyODataModelError(
+                f"Malformed value {value} for primitive Edm.DateTimeOffset type."
+                " Expected format is /Date(<ticks>±<offset>)/")
+
+        tzinfo = datetime.timezone(datetime.timedelta(minutes=offset_in_minutes))
+        # Might raise a PyODataModelError exception
+        return ms_since_epoch_to_datetime(milliseconds_since_epoch, tzinfo)
+
+    def from_literal(self, value):
+
+        if value is None:
+            return None
+
+        value = super(EdmDateTimeOffsetTypTraits, self).from_literal(value)
+
+        try:
+            # Note: parse_datetime_literal raises a PyODataModelError exception on invalid formats
+            if re.match(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z', value, flags=re.ASCII | re.IGNORECASE):
+                datetime_part = value[:-1]
+                tz_info = datetime.timezone.utc
+            else:
+                match = re.match(r'(?P<datetime>.+)(?P<sign>[\\+-])(?P<hours>\d{2}):(?P<minutes>\d{2})',
+                                 value,
+                                 flags=re.ASCII)
+                datetime_part = match.group('datetime')
+                tz_offset = datetime.timedelta(hours=int(match.group('hours')),
+                                               minutes=int(match.group('minutes')))
+                tz_sign = -1 if match.group('sign') == '-' else 1
+                tz_info = datetime.timezone(tz_sign * tz_offset)
+            return parse_datetime_literal(datetime_part).replace(tzinfo=tz_info)
+        except (ValueError, AttributeError):
+            raise PyODataModelError(f'Cannot decode datetimeoffset from value {value}.')
 
 
 class EdmStringTypTraits(TypTraits):
@@ -781,6 +896,10 @@ class Schema:
             self.associations = dict()
             self.association_sets = dict()
 
+            # generated collections for ease of lookup (e.g. function import return type)
+            self._collections_entity_types = dict()
+            self._collections_complex_types = dict()
+
         def list_entity_types(self):
             return list(self.entity_types.values())
 
@@ -810,9 +929,9 @@ class Schema:
             # automatically create and register collection variant if not exists
             if isinstance(etype, NullType):
                 return
-
             collection_type_name = f'Collection({etype.name})'
-            self.entity_types[collection_type_name] = Collection(etype.name, etype)
+            self._collections_entity_types[collection_type_name] = Collection(etype.name, etype)
+            # TODO performance memory: this is generating collection for every entity type encoutered, regardless of such collection is really used.
 
         def add_complex_type(self, ctype):
             """Add new complex type to the type repository as well as its collection variant"""
@@ -822,9 +941,9 @@ class Schema:
             # automatically create and register collection variant if not exists
             if isinstance(ctype, NullType):
                 return
-
             collection_type_name = f'Collection({ctype.name})'
-            self.complex_types[collection_type_name] = Collection(ctype.name, ctype)
+            self._collections_complex_types[collection_type_name] = Collection(ctype.name, ctype)
+            # TODO performance memory: this is generating collection for every entity type encoutered, regardless of such collection is really used.
 
         def add_enum_type(self, etype):
             """Add new enum type to the type repository"""
@@ -868,7 +987,7 @@ class Schema:
         """Returns either EntityType, ComplexType or EnumType that matches the name.
         """
 
-        for type_space in (self.entity_type, self.complex_type, self.enum_type):
+        for type_space in (self.entity_type, self._collections_entity_types, self.complex_type, self._collections_complex_types, self.enum_type):
             try:
                 return type_space(type_name, namespace=namespace)
             except KeyError:
@@ -892,6 +1011,21 @@ class Schema:
 
         raise KeyError(f'EntityType {type_name} does not exist in any Schema Namespace')
 
+    def _collections_entity_types(self, type_name, namespace=None):
+        if namespace is not None:
+            try:
+                return self._decls[namespace]._collections_entity_types[type_name]
+            except KeyError:
+                raise KeyError(f'EntityType collection {type_name} does not exist in Schema Namespace {namespace}')
+
+        for decl in list(self._decls.values()):
+            try:
+                return decl._collections_entity_types[type_name]
+            except KeyError:
+                pass
+
+        raise KeyError(f'EntityType collection {type_name} does not exist in any Schema Namespace')
+
     def complex_type(self, type_name, namespace=None):
         if namespace is not None:
             try:
@@ -906,6 +1040,21 @@ class Schema:
                 pass
 
         raise KeyError(f'ComplexType {type_name} does not exist in any Schema Namespace')
+
+    def _collections_complex_types(self, type_name, namespace=None):
+        if namespace is not None:
+            try:
+                return self._decls[namespace]._collections_complex_types[type_name]
+            except KeyError:
+                raise KeyError(f'ComplexType collection {type_name} does not exist in Schema Namespace {namespace}')
+
+        for decl in list(self._decls.values()):
+            try:
+                return decl._collections_complex_types[type_name]
+            except KeyError:
+                pass
+
+        raise KeyError(f'ComplexType collection {type_name} does not exist in any Schema Namespace')
 
     def enum_type(self, type_name, namespace=None):
         if namespace is not None:
@@ -933,15 +1082,25 @@ class Schema:
         except KeyError:
             pass
 
-        # then look for type in entity types
+        # then look for type in entity types and collections of entity types
         try:
             return self.entity_type(search_name, type_info.namespace)
         except KeyError:
             pass
 
-        # then look for type in complex types
+        try:
+            return self._collections_entity_types(search_name, type_info.namespace)
+        except KeyError:
+            pass
+
+        # then look for type in complex types and collections of complex types
         try:
             return self.complex_type(search_name, type_info.namespace)
+        except KeyError:
+            pass
+
+        try:
+            return self._collections_complex_types(search_name, type_info.namespace)
         except KeyError:
             pass
 
@@ -1671,7 +1830,7 @@ class StructTypeProperty(VariableDeclaration):
 
         self._struct_type = value
 
-        if self._text_proprty_name is not None:
+        if self._text_proprty_name:
             try:
                 self._text_proprty = self._struct_type.proprty(self._text_proprty_name)
             except KeyError:
@@ -2565,7 +2724,12 @@ class MetadataBuilder:
             raise TypeError(f'Expected bytes or str type on metadata_xml, got : {type(self._xml)}')
 
         namespaces = self._config.namespaces
-        xml = etree.parse(mdf)
+
+        try:
+            xml = etree.parse(mdf)
+        except etree.XMLSyntaxError as ex:
+            raise PyODataParserError('Metadata document syntax error') from ex
+
         edmx = xml.getroot()
 
         try:

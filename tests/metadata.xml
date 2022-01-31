@@ -59,6 +59,8 @@
                           sap:creatable="false" sap:updatable="false" sap:sortable="true" sap:filterable="true"/>
                 <Property Name="Date" Type="Edm.DateTime" Nullable="false" sap:label="Data" sap:creatable="false"
                           sap:updatable="false" sap:sortable="true" sap:filterable="true"/>
+                <Property Name="DateTimeWithOffset" Type="Edm.DateTimeOffset" Nullable="true" sap:label="Data"
+                          sap:creatable="false" sap:updatable="true" sap:sortable="true" sap:filterable="true"/>
                 <Property Name="Value" Type="Edm.Double" Nullable="false" sap:unicode="false" sap:label="Data"
                           sap:creatable="false" sap:updatable="false" sap:sortable="true" sap:filterable="true"/>
             </EntityType>
@@ -327,6 +329,14 @@
                 <Property Name="ID" Type="Edm.Int32" Nullable="false"/>
                 <Property Name="Street" Type="Edm.String" Nullable="true"/>
                 <Property Name="City" Type="Edm.String" Nullable="true"/>
+            </EntityType>
+
+            <EntityType Name="MaterialEntityWithEmptyString">
+                <Key>
+                    <PropertyRef Name="ID"/>
+                </Key>
+                <Property Name="ID" Type="Edm.String" Nullable="false" sap:filterable="false" sap:updatable="false" sap:sortable="false"/>
+                <Property Name="Material_Type" Type="Edm.String" MaxLength="20" sap:text="" sap:updatable="false" sap:label="Material branding"/>
             </EntityType>
 
             <Association Name="AssociationEmployeeAddress">
