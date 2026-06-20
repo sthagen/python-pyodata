@@ -1659,58 +1659,77 @@ class FunctionContainer:
 
         fimport = self._service.schema.function_import(name)
 
-        def function_import_handler(fimport, response):
-            """Get function call response from HTTP Response"""
-
+        def _handle_response_status(fimport, response):
+            # errors — raise on any non-2xx response
             if 300 <= response.status_code < 400:
                 raise HttpError(f'Function Import {fimport.name} requires Redirection which is not supported',
                                 response)
-
             if response.status_code == 401:
                 raise HttpError(f'Not authorized to call Function Import {fimport.name}',
                                 response)
-
             if response.status_code == 403:
                 raise HttpError(f'Missing privileges to call Function Import {fimport.name}',
                                 response)
-
             if response.status_code == 405:
                 raise HttpError(
                     f'Despite definition Function Import {fimport.name} does not support HTTP {fimport.http_method}',
                     response)
-
             if 400 <= response.status_code < 500:
                 raise HttpError(
                     f'Function Import {fimport.name} call has failed with status code {response.status_code}',
                     response)
-
             if response.status_code >= 500:
                 raise HttpError(f'Server has encountered an error while processing Function Import {fimport.name}',
                                 response)
 
+            # warnings — unexpected 2xx codes
             if fimport.return_type is None:
                 if response.status_code != 204:
                     logging.getLogger(LOGGER_NAME).warning(
                         'The No Return Function Import %s has replied with HTTP Status Code %d instead of 204',
                         fimport.name, response.status_code)
+            elif response.status_code != 200:
+                logging.getLogger(LOGGER_NAME).warning(
+                    'The Function Import %s has replied with HTTP Status Code %d instead of 200',
+                    fimport.name, response.status_code)
 
+        def function_import_handler(fimport, response):
+            """Get function call response from HTTP Response"""
+
+            _handle_response_status(fimport, response)
+
+            if fimport.return_type is None:
                 if response.text:
                     logging.getLogger(LOGGER_NAME).warning(
                         'The No Return Function Import %s has returned content:\n%s', fimport.name, response.text)
 
                 return None
 
-            if response.status_code != 200:
-                logging.getLogger(LOGGER_NAME).warning(
-                    'The Function Import %s has replied with HTTP Status Code %d instead of 200',
-                    fimport.name, response.status_code)
-
             response_data = response.json()['d']
 
-            # 1. if return types is "entity type", return instance of appropriate entity proxy
-            if isinstance(fimport.return_type, model.EntityType):
+            # 1. if return type is an entity type or collection, resolve the entity set once
+            if isinstance(fimport.return_type, (model.EntityType, model.Collection)):
                 entity_set = self._service.schema.entity_set(fimport.entity_set_name)
+
+            if isinstance(fimport.return_type, model.EntityType):
                 return EntityProxy(self._service, entity_set, fimport.return_type, response_data)
+
+            if isinstance(fimport.return_type, model.Collection):
+                total_count = None
+                next_url = None
+                if '__count' in response_data:
+                    total_count = int(response_data['__count'])
+                if '__next' in response_data:
+                    next_url = response_data['__next']
+                results = response_data.get('results')
+                if results is None:
+                    raise PyODataException(
+                        f'Function import {fimport.name} returned a Collection response without a "results" key')
+                collection = ListWithTotalCount(total_count, next_url)
+                collection_item_type = fimport.return_type.item_type
+                for entity in results:
+                    collection.append(EntityProxy(self._service, entity_set, collection_item_type, entity))
+                return collection
 
             # 2. return raw data for all other return types (primitives, complex types encoded in dicts, etc.)
             return response_data
