@@ -282,7 +282,6 @@ class EdmStructTypeSerializer:
     @staticmethod
     def to_literal(edm_type, value):
 
-        # pylint: disable=no-self-use
         if not edm_type:
             raise PyODataException(f'Cannot encode value {value} without complex type information')
 
@@ -296,7 +295,6 @@ class EdmStructTypeSerializer:
     @staticmethod
     def from_json(edm_type, value):
 
-        # pylint: disable=no-self-use
         if not edm_type:
             raise PyODataException(f'Cannot decode value {value} without complex type information')
 
@@ -310,7 +308,6 @@ class EdmStructTypeSerializer:
     @staticmethod
     def from_literal(edm_type, value):
 
-        # pylint: disable=no-self-use
         if not edm_type:
             raise PyODataException(f'Cannot decode value {value} without complex type information')
 
@@ -328,11 +325,9 @@ class TypTraits:
     def __repr__(self):
         return self.__class__.__name__
 
-    # pylint: disable=no-self-use
     def to_literal(self, value):
         return value
 
-    # pylint: disable=no-self-use
     def from_json(self, value):
         return value
 
@@ -568,11 +563,9 @@ class EdmDateTimeOffsetTypTraits(EdmPrefixedTypTraits):
 class EdmStringTypTraits(TypTraits):
     """Edm.String traits"""
 
-    # pylint: disable=no-self-use
     def to_literal(self, value):
         return '\'%s\'' % (str(value).replace("'", "''"))
 
-    # pylint: disable=no-self-use
     def from_json(self, value):
         return value
 
@@ -585,11 +578,9 @@ class EdmStringTypTraits(TypTraits):
 class EdmBooleanTypTraits(TypTraits):
     """Edm.Boolean traits"""
 
-    # pylint: disable=no-self-use
     def to_literal(self, value):
         return 'true' if value else 'false'
 
-    # pylint: disable=no-self-use
     def from_json(self, value):
         return value
 
@@ -600,11 +591,9 @@ class EdmBooleanTypTraits(TypTraits):
 class EdmIntTypTraits(TypTraits):
     """All Edm Integer traits"""
 
-    # pylint: disable=no-self-use
     def to_literal(self, value):
         return '%d' % (value)
 
-    # pylint: disable=no-self-use
     def from_json(self, value):
         return int(value)
 
@@ -615,11 +604,9 @@ class EdmIntTypTraits(TypTraits):
 class EdmLongIntTypTraits(TypTraits):
     """All Edm Integer for big numbers traits"""
 
-    # pylint: disable=no-self-use
     def to_literal(self, value):
         return '%dL' % (value)
 
-    # pylint: disable=no-self-use
     def from_json(self, value):
         if value[-1] == 'L':
             return int(value[:-1])
@@ -655,14 +642,12 @@ class EdmFPNumTypTraits(TypTraits):
     def edm_single():
         return EdmFPNumTypTraits(7, 'f', '{:f}')
 
-    # pylint: disable=no-self-use
     def to_literal(self, value):
         return self.conversion.format(value)
 
     def to_json(self, value):
         return self.to_literal(value)
 
-    # pylint: disable=no-self-use
     def from_json(self, value):
         if not isinstance(value, str) or value[-1] != self.suffix:
             return float(value)
@@ -680,11 +665,9 @@ class EdmStructTypTraits(TypTraits):
         super().__init__()
         self._edm_type = edm_type
 
-    # pylint: disable=no-self-use
     def to_literal(self, value):
         return EdmStructTypeSerializer.to_literal(self._edm_type, value)
 
-    # pylint: disable=no-self-use
     def from_json(self, value):
         return EdmStructTypeSerializer.from_json(self._edm_type, value)
 
@@ -761,14 +744,12 @@ class Collection(Typ):
     def traits(self):
         return self
 
-    # pylint: disable=no-self-use
     def to_literal(self, value):
         if not isinstance(value, list):
             raise PyODataException(f'Bad format: invalid list value {value}')
 
         return [self._item_type.traits.to_literal(v) for v in value]
 
-    # pylint: disable=no-self-use
     def from_json(self, value):
         if not isinstance(value, list):
             raise PyODataException(f'Bad format: invalid list value {value}')
@@ -2461,15 +2442,15 @@ class ValueHelper(Annotation):
         search_supported = False
         params_node = None
         for prop_value in annotation_node.xpath('edm:Record/edm:PropertyValue', namespaces=ANNOTATION_NAMESPACES):
-            rprop = prop_value.get('Property')
-            if rprop == 'Label':
-                label = prop_value.get('String')
-            elif rprop == 'CollectionPath':
-                collection_path = prop_value.get('String')
-            elif rprop == 'SearchSupported':
-                search_supported = prop_value.get('Bool')
-            elif rprop == 'Parameters':
-                params_node = prop_value
+            match prop_value.get('Property'):
+                case 'Label':
+                    label = prop_value.get('String')
+                case 'CollectionPath':
+                    collection_path = prop_value.get('String')
+                case 'SearchSupported':
+                    search_supported = prop_value.get('Bool')
+                case 'Parameters':
+                    params_node = prop_value
 
         value_helper = ValueHelper(target, collection_path, label, search_supported)
 
@@ -2555,11 +2536,11 @@ class ValueHelperParameter:
         local_prop_name = None
         list_prop_name = None
         for pval in value_help_parameter_node.xpath('edm:PropertyValue', namespaces=ANNOTATION_NAMESPACES):
-            pv_name = pval.get('Property')
-            if pv_name == 'LocalDataProperty':
-                local_prop_name = pval.get('PropertyPath')
-            elif pv_name == 'ValueListProperty':
-                list_prop_name = pval.get('String')
+            match pval.get('Property'):
+                case 'LocalDataProperty':
+                    local_prop_name = pval.get('PropertyPath')
+                case 'ValueListProperty':
+                    list_prop_name = pval.get('String')
 
         return ValueHelperParameter(direction, local_prop_name, list_prop_name)
 
@@ -2726,12 +2707,13 @@ class MetadataBuilder:
     def build(self):
         """ Build model from the XML metadata"""
 
-        if isinstance(self._xml, str):
-            mdf = io.StringIO(self._xml)
-        elif isinstance(self._xml, bytes):
-            mdf = io.BytesIO(self._xml)
-        else:
-            raise TypeError(f'Expected bytes or str type on metadata_xml, got : {type(self._xml)}')
+        match self._xml:
+            case str():
+                mdf = io.StringIO(self._xml)
+            case bytes():
+                mdf = io.BytesIO(self._xml)
+            case _:
+                raise TypeError(f'Expected bytes or str type on metadata_xml, got : {type(self._xml)}')
 
         namespaces = self._config.namespaces
 
